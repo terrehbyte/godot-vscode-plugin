@@ -1,12 +1,15 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { window, OutputChannel } from "vscode";
 import { GDDocumentLinkProvider } from "./document_link_provider";
 import GDScriptLanguageClient, { ClientStatus } from "./lsp/GDScriptLanguageClient";
 import { ScenePreviewProvider } from "./scene_preview_provider";
 import { get_configuration, set_configuration, find_file, set_context, find_project_file } from "./utils";
 
 const TOOL_NAME = "GodotTools";
+
+
 
 export class GodotTools {
 	private reconnection_attempts = 0;
@@ -16,6 +19,7 @@ export class GodotTools {
 	private scenePreviewManager: ScenePreviewProvider = null;
 
 	private connection_status: vscode.StatusBarItem = null;
+	private static output: OutputChannel = window.createOutputChannel("GodotTools");
 
 	constructor(p_context: vscode.ExtensionContext) {
 		this.context = p_context;
@@ -156,18 +160,28 @@ export class GodotTools {
 				const escape_command = (cmd: string) => {
 					const cmdEsc = `"${cmd}"`;
 					if (process.platform === "win32") {
-						const shell_plugin = vscode.workspace.getConfiguration("terminal.integrated.shell");
+						let shell_path;
+						let shell_plugin = vscode.workspace.getConfiguration("terminal.integrated.automationProfile.windows");
 
 						if (shell_plugin) {
-							const shell = shell_plugin.get<string>("windows");
-							if (shell) {
-								if (is_powershell_path(shell)) {
-									return `&${cmdEsc}`;
-								} else {
-									return cmdEsc;
-								}
+							shell_path = shell_plugin.get<string>("path");
+						}
+						else if (!shell_plugin) {
+							shell_plugin = vscode.workspace.getConfiguration("terminal.integrated.shell");
+							if (shell_plugin) {
+								shell_path = shell_plugin.get<string>("windows");
 							}
 						}
+
+						if (shell_path) {
+							if (is_powershell_path(shell_path)) {
+								return `&${cmdEsc}`;
+							} else {
+								return cmdEsc;
+							}
+						}
+
+						GodotTools.output.appendLine("Failed to use automation profile and default integrated shell. Attempting to find a PowerShell profile as fallback.");
 
 						const POWERSHELL_SOURCE = "PowerShell";
 						const default_profile = vscode.workspace.getConfiguration("terminal.integrated.defaultProfile");
@@ -188,7 +202,7 @@ export class GodotTools {
 								}
 							}
 						}
-						// default for Windows if nothing is set is PowerShell
+						// default for Windows, if nothing is set, is PowerShell
 						return `&${cmdEsc}`;
 
 					}
@@ -198,7 +212,26 @@ export class GodotTools {
 				if (existingTerminal) {
 					existingTerminal.dispose();
 				}
-				let terminal = vscode.window.createTerminal(TOOL_NAME);
+
+				let platformSuffix = "";
+				switch (process.platform) {
+					case "win32":
+						platformSuffix = "windows";
+						break;
+					case "darwin":
+						platformSuffix = "osx";
+						break;
+					default:
+						platformSuffix = "linux";
+						break;
+				}
+
+				const shell = vscode.workspace.getConfiguration("terminal.integrated.automationProfile." + platformSuffix);
+				const shellPath = shell.get<string>("path");
+				const shellArgs = shell.get<string>("args");
+
+				// will fallback to default shell if no automation profile is set (i.e., shellPath and shellArgs are null)
+				let terminal = vscode.window.createTerminal(TOOL_NAME, shellPath, shellArgs);
 				let editorPath = escape_command(path);
 				let cmmand = `${editorPath} ${params}`;
 				terminal.sendText(cmmand, true);
